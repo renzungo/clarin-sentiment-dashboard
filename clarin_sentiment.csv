@@ -1,0 +1,4 @@
+date,section,title,sentiment_label,sentiment_score,url,cover_image_url
+2025-08-01,Política,Ejemplo de titular positivo,positive,0.82,https://www.clarin.com/ejemplo,https://example.com/cover1.jpg
+2025-08-02,Deportes,Otro titular neutral,neutral,0.05,https://www.clarin.com/ejemplo2,https://example.com/cover2.jpg
+2025-08-03,Economía,Un titular negativo,negative,-0.67,https://www.clarin.com/ejemplo3,https://example.com/cover3.jpg
