@@ -19,11 +19,13 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Push to Space (direct URL + auth header)
+      - name: Push to Space (token in URL)
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          HF_SPACE: renzungo/clarin-sentiment-dashboard
         run: |
           set -e
-          git -c http.extraHeader="Authorization: Bearer $HF_TOKEN" \
-              push --force https://huggingface.co/spaces/$HF_SPACE HEAD:main
+          git push --force \
+            https://renzungo:${HF_TOKEN}@huggingface.co/spaces/renzungo/clarin-sentiment-dashb
+
+oard \
+            HEAD:main
