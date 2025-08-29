@@ -1,0 +1,36 @@
+name: Sync to Hugging Face Spaces
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  HF_SPACE: renzungo/clarin-sentiment-dashboard   # change if you want a different Space
+
+jobs:
+  sync-to-hub:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (with LFS)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      - name: Install Git LFS and track common large files
+        run: |
+          git lfs install
+          git lfs track "*.csv" "*.parquet" "*.pt" "*.bin" "*.pkl" "*.zip" || true
+          git add .gitattributes || true
+
+      - name: Configure Git identity
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Push to Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          git remote add hf https://$HF_TOKEN@huggingface.co/spaces/$HF_SPACE || true
+          git push --force hf HEAD:main
