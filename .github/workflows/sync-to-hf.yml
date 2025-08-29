@@ -19,13 +19,12 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Push to Space (token in URL)
+      - name: Push to Hugging Face Space
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           set -e
+          # Push the current commit on main -> Space main
           git push --force \
-            https://renzungo:${HF_TOKEN}@huggingface.co/spaces/renzungo/clarin-sentiment-dashb
-
-oard \
+            https://renzungo:${HF_TOKEN}@huggingface.co/spaces/renzungo/clarin-sentiment-dashboard \
             HEAD:main
