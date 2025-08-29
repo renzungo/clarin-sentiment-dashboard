@@ -5,52 +5,27 @@ on:
   workflow_dispatch:
 
 env:
-  HF_SPACE: renzungo/clarin-sentiment-dashboard   # ← exact slug you want to deploy
+  HF_SPACE: renzungo/clarin-sentiment-dashboard
 
 jobs:
   sync-to-hub:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (with LFS)
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           lfs: true
 
-      - name: Install Git LFS and track common large files (safe if none)
+      - name: Configure Git
         run: |
           git lfs install
-          git lfs track "*.csv" "*.parquet" "*.pt" "*.bin" "*.pkl" "*.zip" || true
-          git add .gitattributes || true
-
-      - name: Configure Git identity
-        run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      # Preflight: prove we can see the Space with the token (helps diagnose 128)
-      - name: Preflight auth check (ls-remote)
+      - name: Push to Space
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          set -e
-          echo "Checking access to https://huggingface.co/spaces/$HF_SPACE"
-          # Use Authorization header (safer than embedding token in URL)
-          git -c http.extraHeader="Authorization: Bearer $HF_TOKEN" ls-remote https://huggingface.co/spaces/$HF_SPACE || (echo "::error::Cannot access the Space (check token/slug/permissions)"; exit 1)
-
-      - name: Push to Space (with verbose logs)
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: |
-          set -e
           git remote remove hf 2>/dev/null || true
           git remote add hf https://huggingface.co/spaces/$HF_SPACE
-          echo "Remotes:"
-          git remote -v
-
-          # Extra diagnostics
-          export GIT_TRACE=1
-          export GIT_CURL_VERBOSE=1
-
-          # Push current commit on main → Space main
           git -c http.extraHeader="Authorization: Bearer $HF_TOKEN" push --force hf HEAD:main
