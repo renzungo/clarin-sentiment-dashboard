@@ -42,58 +42,128 @@ def t(key: str) -> str:
     lang = st.session_state.get("lang", "es")
     return STRINGS.get(lang, STRINGS["es"]).get(key, key)
 
+# Sidebar language toggle
 if "lang" not in st.session_state:
     st.session_state.lang = "es"
 with st.sidebar:
-    st.selectbox(STRINGS[st.session_state.lang]["language"], options=list(LANGS.keys()),
-                 format_func=lambda k: LANGS[k], key="lang")
+    st.selectbox(
+        STRINGS[st.session_state.lang]["language"],
+        options=list(LANGS.keys()),
+        format_func=lambda k: LANGS[k],
+        key="lang"
+    )
 
-@st.cache_data(ttl=300)
-def load_data():
+REQUIRED_COLS = {"date", "sentiment_score"}
+OPTIONAL_COLS = {"section", "title", "sentiment_label", "url"}
+
+@st.cache_data(ttl=600, show_spinner=True)
+def load_data() -> pd.DataFrame:
     data_url = os.getenv("DATA_URL", "").strip()
+    read_kwargs = dict(dtype=str)  # load as str first; we'll coerce below
     if data_url:
-        df = pd.read_csv(data_url)
+        df = pd.read_csv(data_url, **read_kwargs)
     else:
-        df = pd.read_csv("data/clarin_sentiment.csv")
+        # local fallback for dev
+        df = pd.read_csv("data/clarin_sentiment.csv", **read_kwargs)
+
+    # Normalize columns to lowercase to avoid case issues
+    df.columns = [c.strip().lower() for c in df.columns]
+
+    # Coerce types safely
     if "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    if "sentiment_score" in df.columns:
+        df["sentiment_score"] = pd.to_numeric(df["sentiment_score"], errors="coerce")
+
+    # Standardize sentiment labels to {positive, neutral, negative} when present
+    if "sentiment_label" in df.columns:
+        df["sentiment_label"] = df["sentiment_label"].astype(str).str.strip().str.lower()
+
+    # Basic cleaning
+    df = df.dropna(subset=["date"]).sort_values("date")
+
     return df
 
 df = load_data()
+
+# Basic schema check
+missing = REQUIRED_COLS - set(df.columns)
+if missing:
+    st.error(f"Missing required column(s): {', '.join(sorted(missing))}")
+    st.stop()
+
 st.title(t("title"))
 st.caption(t("subtitle"))
+
 if df.empty:
     st.info(t("no_data"))
     st.stop()
 
+# Sidebar filters
 min_d = pd.to_datetime(df["date"]).min()
 max_d = pd.to_datetime(df["date"]).max()
-with st.sidebar:
-    date_range = st.date_input(t("date"), (min_d.date(), max_d.date()))
-    sections = sorted(df["section"].dropna().unique().tolist() if "section" in df.columns else [])
-    selected_sections = st.multiselect(t("section"), sections, default=sections[:5])
+# Ensure safe defaults if min/max are NaT
+if pd.isna(min_d) or pd.isna(max_d):
+    st.info(t("no_data"))
+    st.stop()
 
-mask = df["date"].between(pd.to_datetime(date_range[0]), pd.to_datetime(date_range[1]))
-if selected_sections:
+with st.sidebar:
+    # Streamlit returns a single date when min==max; normalize to a tuple
+    date_sel = st.date_input(
+        t("date"),
+        value=(min_d.date(), max_d.date()),
+        min_value=min_d.date(),
+        max_value=max_d.date()
+    )
+    if isinstance(date_sel, tuple):
+        start_d, end_d = date_sel
+    else:
+        start_d = end_d = date_sel
+
+    sections = sorted(df["section"].dropna().unique().tolist()) if "section" in df.columns else []
+    default_sections = sections[:5] if sections else []
+    selected_sections = st.multiselect(t("section"), sections, default=default_sections)
+
+# Row filtering
+mask = df["date"].between(pd.to_datetime(start_d), pd.to_datetime(end_d))
+if selected_sections and "section" in df.columns:
     mask &= df["section"].isin(selected_sections)
 dff = df.loc[mask].copy()
+
 if dff.empty:
     st.info(t("no_data"))
     st.stop()
 
+# KPIs
 c1, c2, c3 = st.columns(3)
 c1.metric(t("kpi_notes"), int(len(dff)))
-c2.metric(t("kpi_mean"), round(dff["sentiment_score"].mean(), 3))
-pos_ratio = (dff["sentiment_label"].astype(str).str.lower().eq("positive").mean()) * 100
-c3.metric(t("kpi_pos"), f"{pos_ratio:.1f}%")
+mean_sent = dff["sentiment_score"].mean()
+c2.metric(t("kpi_mean"), f"{mean_sent:.3f}" if pd.notna(mean_sent) else "—")
 
-ts = dff.set_index("date").resample("D")["sentiment_score"].mean().reset_index()
-st.plotly_chart(px.line(ts, x="date", y="sentiment_score", title=t("time_series")), use_container_width=True)
+pos_ratio = None
+if "sentiment_label" in dff.columns:
+    pos_ratio = (dff["sentiment_label"].eq("positive").mean()) * 100
+c3.metric(t("kpi_pos"), f"{pos_ratio:.1f}%" if pos_ratio is not None else "—")
+
+# Charts
+ts = (
+    dff.set_index("date")["sentiment_score"]
+    .resample("D").mean()
+    .reset_index()
+    .rename(columns={"sentiment_score": "avg_sentiment"})
+)
+st.plotly_chart(px.line(ts, x="date", y="avg_sentiment", title=t("time_series")), use_container_width=True)
 st.plotly_chart(px.histogram(dff, x="sentiment_score", nbins=40, title=t("dist")), use_container_width=True)
 
-show_cols = [c for c in ["date","section","title","sentiment_label","sentiment_score","url"] if c in dff.columns]
+# Table
+show_cols = [c for c in ["date", "section", "title", "sentiment_label", "sentiment_score", "url"] if c in dff.columns]
 st.subheader(t("recent"))
 st.dataframe(dff.sort_values("date", ascending=False)[show_cols].head(300), use_container_width=True)
 
-st.download_button(t("download_csv"), data=dff.to_csv(index=False).encode("utf-8"),
-                   file_name="clarin_sentiment_filtered.csv", mime="text/csv")
+# Download
+st.download_button(
+    t("download_csv"),
+    data=dff.to_csv(index=False).encode("utf-8"),
+    file_name="clarin_sentiment_filtered.csv",
+    mime="text/csv"
+)
