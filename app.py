@@ -22,8 +22,11 @@ STRINGS = {
         "kpi_notes": "Notas",
         "kpi_mean": "Sentimiento medio",
         "kpi_pos": "% positivas",
-        "time_series": "Tendencia diaria del sentimiento",
+        "time_series": "Tendencia mensual del sentimiento",
         "dist": "Distribución de puntajes",
+        "section_avg": "Sentimiento promedio por sección",
+        "top_pos": "Titulares más positivos",
+        "top_neg": "Titulares más negativos",
         "recent": "Titulares recientes",
         "download_csv": "Descargar CSV filtrado",
         "no_data": "Sin datos para los filtros seleccionados.",
@@ -38,8 +41,11 @@ STRINGS = {
         "kpi_notes": "Articles",
         "kpi_mean": "Avg sentiment",
         "kpi_pos": "% positive",
-        "time_series": "Daily sentiment trend",
+        "time_series": "Monthly sentiment trend",
         "dist": "Score distribution",
+        "section_avg": "Average sentiment by section",
+        "top_pos": "Most positive headlines",
+        "top_neg": "Most negative headlines",
         "recent": "Recent headlines",
         "download_csv": "Download filtered CSV",
         "no_data": "No data for selected filters.",
@@ -251,14 +257,66 @@ pos_ratio = (dff["sentiment_label"].eq("positive").mean()*100) if "sentiment_lab
 c3.metric(T("kpi_pos"), f"{pos_ratio:.1f}%" if pos_ratio is not None else "—")
 
 # Gráficos
-ts = (dff.set_index("date")["sentiment_score"].resample("D").mean()
-      .reset_index().rename(columns={"sentiment_score":"avg_sentiment"}))
-st.plotly_chart(px.line(ts, x="date", y="avg_sentiment", title=T("time_series")), use_container_width=True)
-st.plotly_chart(px.histogram(dff, x="sentiment_score", nbins=40, title=T("dist")), use_container_width=True)
+ts = (dff.set_index("date")["sentiment_score"].resample("M").mean()
+      .reset_index().rename(columns={"sentiment_score": "avg_sentiment"}))
+st.plotly_chart(
+    px.line(ts, x="date", y="avg_sentiment", title=T("time_series"), markers=True),
+    use_container_width=True,
+)
+
+hist_df = dff.assign(
+    score_sign=dff["sentiment_score"].apply(
+        lambda x: "positive" if x > 0 else ("negative" if x < 0 else "neutral")
+    )
+)
+color_map = {"positive": "#2ca02c", "negative": "#d62728", "neutral": "#7f7f7f"}
+hist_fig = px.histogram(
+    hist_df,
+    x="sentiment_score",
+    nbins=40,
+    title=T("dist"),
+    color="score_sign",
+    color_discrete_map=color_map,
+)
+st.plotly_chart(hist_fig, use_container_width=True)
+
+if "section" in dff.columns and dff["section"].notna().any():
+    sec_avg = (
+        dff.groupby("section")["sentiment_score"].mean().sort_values(ascending=False).reset_index()
+    )
+    sec_fig = px.bar(
+        sec_avg,
+        x="section",
+        y="sentiment_score",
+        title=T("section_avg"),
+        color="sentiment_score",
+        color_continuous_scale="RdYlGn",
+    )
+    st.plotly_chart(sec_fig, use_container_width=True)
 
 # Tabla + descarga
 cols = [c for c in ["date","section","title","sentiment_label","sentiment_score","url"] if c in dff.columns]
+def color_score(val: float) -> str:
+    if val > 0:
+        return "color: #2ca02c"
+    if val < 0:
+        return "color: #d62728"
+    return "color: #7f7f7f"
+
+top_cols = [c for c in ["date","section","title","sentiment_score"] if c in dff.columns]
+top_pos = dff.nlargest(5, "sentiment_score")[top_cols]
+top_neg = dff.nsmallest(5, "sentiment_score")[top_cols]
+c_pos, c_neg = st.columns(2)
+c_pos.subheader(T("top_pos"))
+c_pos.dataframe(top_pos.style.applymap(color_score, subset=["sentiment_score"]), use_container_width=True)
+c_neg.subheader(T("top_neg"))
+c_neg.dataframe(top_neg.style.applymap(color_score, subset=["sentiment_score"]), use_container_width=True)
+
 st.subheader(T("recent"))
-st.dataframe(dff.sort_values("date", ascending=False)[cols].head(300), use_container_width=True)
+table_df = dff.sort_values("date", ascending=False)[cols].head(300)
+st.dataframe(
+    table_df.style.applymap(color_score, subset=["sentiment_score"]),
+    use_container_width=True,
+)
 st.download_button(T("download_csv"), dff.to_csv(index=False).encode("utf-8"),
                    file_name="clarin_sentiment_filtered.csv", mime="text/csv")
