@@ -22,7 +22,7 @@ STRINGS = {
         "kpi_notes": "Notas",
         "kpi_mean": "Sentimiento medio",
         "kpi_pos": "% positivas",
-        "time_series": "Tendencia diaria del sentimiento",
+        "time_series": "Tendencia mensual del sentimiento",
         "dist": "Distribución de puntajes",
         "recent": "Titulares recientes",
         "download_csv": "Descargar CSV filtrado",
@@ -38,7 +38,7 @@ STRINGS = {
         "kpi_notes": "Articles",
         "kpi_mean": "Avg sentiment",
         "kpi_pos": "% positive",
-        "time_series": "Daily sentiment trend",
+        "time_series": "Monthly sentiment trend",
         "dist": "Score distribution",
         "recent": "Recent headlines",
         "download_csv": "Download filtered CSV",
@@ -251,14 +251,44 @@ pos_ratio = (dff["sentiment_label"].eq("positive").mean()*100) if "sentiment_lab
 c3.metric(T("kpi_pos"), f"{pos_ratio:.1f}%" if pos_ratio is not None else "—")
 
 # Gráficos
-ts = (dff.set_index("date")["sentiment_score"].resample("D").mean()
-      .reset_index().rename(columns={"sentiment_score":"avg_sentiment"}))
-st.plotly_chart(px.line(ts, x="date", y="avg_sentiment", title=T("time_series")), use_container_width=True)
-st.plotly_chart(px.histogram(dff, x="sentiment_score", nbins=40, title=T("dist")), use_container_width=True)
+ts = (dff.set_index("date")["sentiment_score"].resample("M").mean()
+      .reset_index().rename(columns={"sentiment_score": "avg_sentiment"}))
+st.plotly_chart(
+    px.line(ts, x="date", y="avg_sentiment", title=T("time_series"), markers=True),
+    use_container_width=True,
+)
+
+hist_df = dff.assign(
+    score_sign=dff["sentiment_score"].apply(
+        lambda x: "positive" if x > 0 else ("negative" if x < 0 else "neutral")
+    )
+)
+color_map = {"positive": "#2ca02c", "negative": "#d62728", "neutral": "#7f7f7f"}
+hist_fig = px.histogram(
+    hist_df,
+    x="sentiment_score",
+    nbins=40,
+    title=T("dist"),
+    color="score_sign",
+    color_discrete_map=color_map,
+)
+st.plotly_chart(hist_fig, use_container_width=True)
 
 # Tabla + descarga
 cols = [c for c in ["date","section","title","sentiment_label","sentiment_score","url"] if c in dff.columns]
 st.subheader(T("recent"))
-st.dataframe(dff.sort_values("date", ascending=False)[cols].head(300), use_container_width=True)
+
+def color_score(val: float) -> str:
+    if val > 0:
+        return "color: #2ca02c"
+    if val < 0:
+        return "color: #d62728"
+    return "color: #7f7f7f"
+
+table_df = dff.sort_values("date", ascending=False)[cols].head(300)
+st.dataframe(
+    table_df.style.applymap(color_score, subset=["sentiment_score"]),
+    use_container_width=True,
+)
 st.download_button(T("download_csv"), dff.to_csv(index=False).encode("utf-8"),
                    file_name="clarin_sentiment_filtered.csv", mime="text/csv")
