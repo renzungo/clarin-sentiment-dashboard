@@ -1,5 +1,6 @@
-pandas
 streamlit
+pandas
 plotly
 requests
-openpyxl   # for .xlsx just in case
+openpyxl
+huggingface_hub
