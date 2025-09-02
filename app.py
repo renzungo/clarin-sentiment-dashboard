@@ -71,7 +71,7 @@ with st.sidebar:
 # -----------------------------
 # Config / Debug
 # -----------------------------
-REQUIRED_COLS = {"date", "sentiment_score"}
+REQUIRED_COLS = {"date", "overall_score"}
 DEBUG = os.getenv("DEBUG", "0").strip() in {"1", "true", "True"}
 
 DATA_URL = os.getenv("DATA_URL", "").strip()           # e.g., https://.../clarin_sentiment.csv
@@ -88,8 +88,8 @@ def load_data() -> pd.DataFrame:
         df.columns = [c.strip().lower() for c in df.columns]
         if "date" in df.columns:
             df["date"] = pd.to_datetime(df["date"], errors="coerce")
-        if "sentiment_score" in df.columns:
-            df["sentiment_score"] = pd.to_numeric(df["sentiment_score"], errors="coerce")
+        if "overall_score" in df.columns:
+            df["overall_score"] = pd.to_numeric(df["overall_score"], errors="coerce")
         if "sentiment_label" in df.columns:
             df["sentiment_label"] = (
                 df["sentiment_label"].astype(str).str.strip().str.lower()
@@ -247,7 +247,7 @@ if dff.empty:
 c1, c2, c3 = st.columns(3)
 c1.metric(T("kpi_notes"), int(len(dff)))
 
-mean_sent = dff["sentiment_score"].mean()
+mean_sent = dff["overall_score"].mean()
 c2.metric(T("kpi_mean"), f"{mean_sent:.3f}" if pd.notna(mean_sent) else "—")
 
 pos_ratio = None
@@ -259,18 +259,18 @@ c3.metric(T("kpi_pos"), f"{pos_ratio:.1f}%" if pos_ratio is not None else "—")
 # Charts
 # -----------------------------
 ts = (
-    dff.set_index("date")["sentiment_score"]
+    dff.set_index("date")["overall_score"]
     .resample("D").mean()
     .reset_index()
-    .rename(columns={"sentiment_score": "avg_sentiment"})
+    .rename(columns={"overall_score": "avg_sentiment"})
 )
 st.plotly_chart(px.line(ts, x="date", y="avg_sentiment", title=T("time_series")), use_container_width=True)
-st.plotly_chart(px.histogram(dff, x="sentiment_score", nbins=40, title=T("dist")), use_container_width=True)
+st.plotly_chart(px.histogram(dff, x="overall_score", nbins=40, title=T("dist")), use_container_width=True)
 
 # -----------------------------
 # Table + Download
 # -----------------------------
-show_cols = [c for c in ["date", "section", "title", "sentiment_label", "sentiment_score", "url"] if c in dff.columns]
+show_cols = [c for c in ["date", "section", "title", "sentiment_label", "overall_score", "url"] if c in dff.columns]
 st.subheader(T("recent"))
 st.dataframe(dff.sort_values("date", ascending=False)[show_cols].head(300), use_container_width=True)
 
