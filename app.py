@@ -2,7 +2,7 @@ import os
 import pandas as pd
 import streamlit as st
 import plotly.express as px
-
+st.write("DATA_URL:", os.getenv("DATA_URL"))
 st.set_page_config(page_title="Clarin Sentiment Analysis", layout="wide")
 
 LANGS = {"es": "Español", "en": "English"}
