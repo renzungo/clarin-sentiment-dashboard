@@ -57,32 +57,77 @@ REQUIRED_COLS = {"date", "sentiment_score"}
 OPTIONAL_COLS = {"section", "title", "sentiment_label", "url"}
 
 @st.cache_data(ttl=600, show_spinner=True)
+import os, io, csv
+import pandas as pd
+import streamlit as st
+import requests
+
+REQUIRED_COLS = {"date", "sentiment_score"}
+
+@st.cache_data(ttl=600, show_spinner=True)
 def load_data() -> pd.DataFrame:
     data_url = os.getenv("DATA_URL", "").strip()
-    read_kwargs = dict(dtype=str)  # load as str first; we'll coerce below
-    if data_url:
-        df = pd.read_csv(data_url, **read_kwargs)
-    else:
-        # local fallback for dev
-        df = pd.read_csv("data/clarin_sentiment.csv", **read_kwargs)
+    local_fallback = "data/clarin_sentiment.csv"
 
-    # Normalize columns to lowercase to avoid case issues
-    df.columns = [c.strip().lower() for c in df.columns]
+    def normalize(df: pd.DataFrame) -> pd.DataFrame:
+        df.columns = [c.strip().lower() for c in df.columns]
+        if "date" in df.columns:
+            df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        if "sentiment_score" in df.columns:
+            df["sentiment_score"] = pd.to_numeric(df["sentiment_score"], errors="coerce")
+        if "sentiment_label" in df.columns:
+            df["sentiment_label"] = df["sentiment_label"].astype(str).str.strip().str.lower()
+        df = df.dropna(subset=["date"]).sort_values("date")
+        return df
 
-    # Coerce types safely
-    if "date" in df.columns:
-        df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    if "sentiment_score" in df.columns:
-        df["sentiment_score"] = pd.to_numeric(df["sentiment_score"], errors="coerce")
+    def read_from_bytes(b: bytes) -> pd.DataFrame:
+        # 1) Excel?
+        if b[:4] == b"PK\x03\x04":  # XLSX is a zip
+            return normalize(pd.read_excel(io.BytesIO(b), engine="openpyxl"))
 
-    # Standardize sentiment labels to {positive, neutral, negative} when present
-    if "sentiment_label" in df.columns:
-        df["sentiment_label"] = df["sentiment_label"].astype(str).str.strip().str.lower()
+        # 2) Try python engine with auto sep sniffing (handles ; , \t)
+        try:
+            return normalize(pd.read_csv(
+                io.BytesIO(b),
+                engine="python",
+                sep=None,              # auto-detect
+                encoding="utf-8-sig",  # handle BOM
+                on_bad_lines="skip"    # skip malformed lines
+            ))
+        except Exception:
+            pass
 
-    # Basic cleaning
-    df = df.dropna(subset=["date"]).sort_values("date")
+        # 3) Fallbacks: explicit separators
+        for sep in [",", ";", "\t", "|"]:
+            try:
+                return normalize(pd.read_csv(
+                    io.BytesIO(b),
+                    engine="python",
+                    sep=sep,
+                    encoding="utf-8-sig",
+                    on_bad_lines="skip"
+                ))
+            except Exception:
+                continue
 
-    return df
+        raise ValueError("Could not parse the file. Check delimiter/encoding.")
+
+    def fetch_bytes(url: str) -> bytes:
+        r = requests.get(url, timeout=60)
+        r.raise_for_status()
+        return r.content
+
+    # Case A: HTTP(S) URL provided
+    if data_url.lower().startswith(("http://", "https://")):
+        b = fetch_bytes(data_url)
+        return read_from_bytes(b)
+
+    # Case B: Local path fallback for dev
+    if os.path.exists(local_fallback):
+        return normalize(pd.read_csv(local_fallback, encoding="utf-8-sig"))
+
+    # Nothing worked
+    raise FileNotFoundError(f"DATA_URL not set to a valid URL and no local fallback at {local_fallback}")
 
 df = load_data()
 
