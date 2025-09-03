@@ -91,6 +91,11 @@ STRINGS = {
         "bucket_econ": "Economía",
         "bucket_politics": "Política",
         "bucket_other": "Otros",
+        # En STRINGS["es"]
+    "text_cols": "Columnas de texto",
+    "no_text_cols": "No se encontraron columnas de texto. Definí TEXT_COLS o elegí otras.",
+
+
     },
     "en": {
         "title": "Clarin - Sentiment Analysis",
@@ -153,6 +158,10 @@ STRINGS = {
         "bucket_econ": "Economy",
         "bucket_politics": "Politics",
         "bucket_other": "Other",
+        
+        # En STRINGS["en"]
+        "text_cols": "Text columns",
+        "no_text_cols": "No text columns found. Set TEXT_COLS or pick others.",
     },
 }
 
@@ -310,6 +319,40 @@ def resolve_score_and_label_cols(df: pd.DataFrame, ui_choice: str) -> Tuple[str,
 # =============================================================================
 ECON_SYNS = {"economia", "economía", "economy", "economics", "eco", "finanzas", "economy & business"}
 POLI_SYNS = {"politica", "política", "politics", "pol", "gobierno", "elecciones", "congreso"}
+TEXT_COLS_ENV = os.getenv("TEXT_COLS", "").strip()  # p.ej. "title,ocr_text"
+
+DEFAULT_TEXT_CANDIDATES = [
+    "title","titulo","título","headline","titular",
+    "cover_text","ocr_text","ocr_clean","ocr","text","body",
+    "desc","description","resumen","bajada","copete","lead","subtitulo","subtítulo"
+]
+EXCLUDE_TEXT_COLS = {"url","section","topic","sentiment_label","entities"}
+
+def pick_text_columns(df: pd.DataFrame) -> list[str]:
+    """1) respeta TEXT_COLS, 2) prioriza candidatos comunes, 3) completa con cualquier columna object."""
+    # 1) Si viene por env, úsala (validando existencia)
+    if TEXT_COLS_ENV:
+        cols_env = [c.strip().lower() for c in TEXT_COLS_ENV.split(",") if c.strip()]
+        cols_env = [c for c in cols_env if c in df.columns]
+    else:
+        cols_env = []
+
+    # 2) Candidatos por nombre (prioridad alta)
+    cand_named = [c for c in DEFAULT_TEXT_CANDIDATES if c in df.columns]
+
+    # 3) Otras columnas tipo object (por si el dataset usa nombres raros)
+    others = [
+        c for c in df.columns
+        if df[c].dtype == "object" and c not in EXCLUDE_TEXT_COLS and c not in cand_named and c not in cols_env
+    ]
+
+    # Orden final (sin duplicados)
+    seen = set()
+    ordered = []
+    for c in cols_env + cand_named + others:
+        if c not in seen:
+            seen.add(c); ordered.append(c)
+    return ordered
 
 def bucket_topic(val: str) -> str:
     s = str(val).strip().lower()
@@ -500,44 +543,72 @@ def distribution_view(dff: pd.DataFrame, active_col: str):
 
 def keywords_view(dff: pd.DataFrame, key_suffix: str = "kw"):
     st.subheader(T("keywords_title"))
-    left, mid, right = st.columns([1,1,1])
-    with left:
+
+    # Detectar y dejar elegir columnas de texto
+    candidates = pick_text_columns(dff)
+    if not candidates:
+        st.info(T("no_text_cols"))
+        return
+
+    # Por defecto, tomamos hasta 2 más “obvias”
+    default_pick = [c for c in candidates if c in DEFAULT_TEXT_CANDIDATES][:2] or candidates[:1]
+
+    col_a, col_b, col_c = st.columns([1,1,1])
+    with col_a:
+        chosen_cols = st.multiselect(T("text_cols"), options=candidates, default=default_pick,
+                                     key=f"text_cols_{key_suffix}")
+    with col_b:
         n = st.select_slider(T("ngram_size"), options=[1,2,3], value=1, key=f"ng_{key_suffix}")
-    with mid:
+    with col_c:
         st.checkbox(T("remove_stopwords"), value=True, key="remove_sw")
-    with right:
-        use_wc = st.checkbox(T("use_wordcloud"), value=False, key=f"use_wc_{key_suffix}")
 
+    if not chosen_cols:
+        st.info(T("no_text_cols"))
+        return
+
+    # Extraer texto de las columnas elegidas
     texts = []
-    for col in ["title", "headline", "text", "cover_text"]:
-        if col in dff.columns:
-            texts.extend(dff[col].dropna().astype(str).tolist())
-    if not texts:
-        st.info(T("no_titles")); return
+    for col in chosen_cols:
+        # mantener solo strings no vacíos
+        texts.extend(dff[col].dropna().astype(str).map(str.strip).replace("", np.nan).dropna().tolist())
 
+    if not texts:
+        st.info(T("no_text_cols"))
+        return
+
+    # Tokenización + n-gramas
     tokens = []
     for t in texts:
         tokens.extend(tokenize(t))
+
     grams = [" ".join(g) for g in ngrams(tokens, n)] if n > 1 else tokens
+    if not grams:
+        st.info(T("no_text_cols"))
+        return
+
+    from collections import Counter
     counts = Counter(grams).most_common(50)
     kw_df = pd.DataFrame(counts, columns=["term", "freq"])
 
+    # Intentar WordCloud si el usuario lo activa (opcional)
+    use_wc = st.checkbox(T("use_wordcloud"), value=False, key=f"use_wc_{key_suffix}")
     if use_wc:
         try:
             from wordcloud import WordCloud
             import matplotlib.pyplot as plt
             wc = WordCloud(width=900, height=400, background_color="white").generate_from_frequencies(dict(counts))
-            st.pyplot(plt.figure(figsize=(9,4)))
-            plt.imshow(wc, interpolation="bilinear"); plt.axis("off"); st.pyplot(plt.gcf()); plt.close()
+            fig = plt.figure(figsize=(9, 4))
+            plt.imshow(wc, interpolation="bilinear"); plt.axis("off")
+            st.pyplot(fig); plt.close(fig)
         except Exception:
-            st.info("WordCloud no disponible; mostrando tabla.")
-            use_wc = False
+            st.info("WordCloud no disponible; mostrando tabla/gráfico.")
 
-    if not use_wc:
-        bar = px.bar(kw_df.head(20), x="term", y="freq", title=T("keywords_title"))
-        bar.update_layout(xaxis={"categoryorder":"total descending"}, margin=dict(l=10,r=10,t=60,b=10))
-        st.plotly_chart(bar, use_container_width=True)
-        st.dataframe(kw_df, use_container_width=True)
+    # Barra + tabla
+    bar = px.bar(kw_df.head(20), x="term", y="freq", title=T("keywords_title"))
+    bar.update_layout(xaxis={"categoryorder":"total descending"}, margin=dict(l=10,r=10,t=60,b=10))
+    st.plotly_chart(bar, use_container_width=True)
+    st.dataframe(kw_df, use_container_width=True)
+   
 
 def entities_view(dff: pd.DataFrame, active_col: str, key_suffix: str = "ents"):
     st.subheader(T("entities_title"))
