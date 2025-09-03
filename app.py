@@ -2,6 +2,7 @@ import os, io, re, requests
 import pandas as pd
 import streamlit as st
 import plotly.express as px
+import analytics
 
 try:
     from huggingface_hub import hf_hub_download  # opcional, solo si usas HF_DATASET/HF_FILE
@@ -28,6 +29,14 @@ STRINGS = {
         "download_csv": "Descargar CSV filtrado",
         "no_data": "Sin datos para los filtros seleccionados.",
         "missing_cols": "Faltan columnas requeridas: ",
+        "overview": "General",
+        "section_tab": "Por sección",
+        "headline_tab": "Titulares destacados",
+        "avg_by_section": "Sentimiento medio por sección",
+        "counts_by_section": "Distribución de sentimiento por sección",
+        "top_pos": "Top positivos",
+        "top_neg": "Top negativos",
+        "no_titles": "No hay títulos disponibles",
     },
     "en": {
         "title": "Clarin - Sentiment Analysis",
@@ -44,6 +53,14 @@ STRINGS = {
         "download_csv": "Download filtered CSV",
         "no_data": "No data for selected filters.",
         "missing_cols": "Missing required columns: ",
+        "overview": "Overview",
+        "section_tab": "By section",
+        "headline_tab": "Top headlines",
+        "avg_by_section": "Average sentiment by section",
+        "counts_by_section": "Sentiment distribution by section",
+        "top_pos": "Top positive headlines",
+        "top_neg": "Top negative headlines",
+        "no_titles": "No titles available",
     },
 }
 def T(key: str) -> str:
@@ -242,53 +259,117 @@ dff = df.loc[mask].copy()
 if dff.empty:
     st.info(T("no_data")); st.stop()
 
-# KPIs
-c1, c2, c3 = st.columns(3)
-c1.metric(T("kpi_notes"), int(len(dff)))
-mean_sent = dff["sentiment_score"].mean()
-c2.metric(T("kpi_mean"), f"{mean_sent:.3f}" if pd.notna(mean_sent) else "—")
-pos_ratio = (dff["sentiment_label"].eq("positive").mean()*100) if "sentiment_label" in dff.columns else None
-c3.metric(T("kpi_pos"), f"{pos_ratio:.1f}%" if pos_ratio is not None else "—")
+overview_tab, section_tab, headline_tab = st.tabs([
+    T("overview"),
+    T("section_tab"),
+    T("headline_tab"),
+])
 
-# Gráficos
-ts = (dff.set_index("date")["sentiment_score"].resample("M").mean()
-      .reset_index().rename(columns={"sentiment_score": "avg_sentiment"}))
-st.plotly_chart(
-    px.line(ts, x="date", y="avg_sentiment", title=T("time_series"), markers=True),
-    use_container_width=True,
-)
-
-hist_df = dff.assign(
-    score_sign=dff["sentiment_score"].apply(
-        lambda x: "positive" if x > 0 else ("negative" if x < 0 else "neutral")
+with overview_tab:
+    # KPIs
+    c1, c2, c3 = st.columns(3)
+    c1.metric(T("kpi_notes"), int(len(dff)))
+    mean_sent = dff["sentiment_score"].mean()
+    c2.metric(T("kpi_mean"), f"{mean_sent:.3f}" if pd.notna(mean_sent) else "—")
+    pos_ratio = (
+        dff["sentiment_label"].eq("positive").mean() * 100
+        if "sentiment_label" in dff.columns
+        else None
     )
-)
-color_map = {"positive": "#2ca02c", "negative": "#d62728", "neutral": "#7f7f7f"}
-hist_fig = px.histogram(
-    hist_df,
-    x="sentiment_score",
-    nbins=40,
-    title=T("dist"),
-    color="score_sign",
-    color_discrete_map=color_map,
-)
-st.plotly_chart(hist_fig, use_container_width=True)
+    c3.metric(T("kpi_pos"), f"{pos_ratio:.1f}%" if pos_ratio is not None else "—")
 
-# Tabla + descarga
-cols = [c for c in ["date","section","title","sentiment_label","sentiment_score","url"] if c in dff.columns]
-st.subheader(T("recent"))
+    # Gráficos principales
+    ts = (
+        dff.set_index("date")["sentiment_score"].resample("M").mean()
+        .reset_index()
+        .rename(columns={"sentiment_score": "avg_sentiment"})
+    )
+    st.plotly_chart(
+        px.line(ts, x="date", y="avg_sentiment", title=T("time_series"), markers=True),
+        use_container_width=True,
+    )
 
-def color_score(val: float) -> str:
-    if val > 0:
-        return "color: #2ca02c"
-    if val < 0:
-        return "color: #d62728"
-    return "color: #7f7f7f"
+    hist_df = dff.assign(
+        score_sign=dff["sentiment_score"].apply(
+            lambda x: "positive" if x > 0 else ("negative" if x < 0 else "neutral")
+        )
+    )
+    color_map = {"positive": "#2ca02c", "negative": "#d62728", "neutral": "#7f7f7f"}
+    hist_fig = px.histogram(
+        hist_df,
+        x="sentiment_score",
+        nbins=40,
+        title=T("dist"),
+        color="score_sign",
+        color_discrete_map=color_map,
+    )
+    st.plotly_chart(hist_fig, use_container_width=True)
 
-table_df = dff.sort_values("date", ascending=False)[cols].head(300)
-st.dataframe(
-    table_df.style.applymap(color_score, subset=["sentiment_score"]),
-    use_container_width=True,
-)
-st.download_button(T("download_csv"), dff.to_csv(index=False).encode("utf-8"),
-                   file_name="clarin_sentiment_filtered.csv", mime="text/csv")
+    # Tabla + descarga
+    cols = [
+        c
+        for c in ["date", "section", "title", "sentiment_label", "sentiment_score", "url"]
+        if c in dff.columns
+    ]
+    st.subheader(T("recent"))
+
+    def color_score(val: float) -> str:
+        if val > 0:
+            return "color: #2ca02c"
+        if val < 0:
+            return "color: #d62728"
+        return "color: #7f7f7f"
+
+    table_df = dff.sort_values("date", ascending=False)[cols].head(300)
+    st.dataframe(
+        table_df.style.applymap(color_score, subset=["sentiment_score"]),
+        use_container_width=True,
+    )
+    st.download_button(
+        T("download_csv"),
+        dff.to_csv(index=False).encode("utf-8"),
+        file_name="clarin_sentiment_filtered.csv",
+        mime="text/csv",
+    )
+
+with section_tab:
+    sec_avg = analytics.section_avg_sentiment(dff)
+    if not sec_avg.empty:
+        st.plotly_chart(
+            px.bar(
+                sec_avg,
+                x="section",
+                y="avg_sentiment",
+                title=T("avg_by_section"),
+            ),
+            use_container_width=True,
+        )
+    sec_counts = analytics.section_label_counts(dff)
+    if not sec_counts.empty:
+        st.plotly_chart(
+            px.bar(
+                sec_counts,
+                x="section",
+                y="count",
+                color="sentiment_label",
+                title=T("counts_by_section"),
+                barmode="stack",
+            ),
+            use_container_width=True,
+        )
+
+with headline_tab:
+    if "title" in dff.columns:
+        pos_df = dff.sort_values("sentiment_score", ascending=False).head(10)
+        neg_df = dff.sort_values("sentiment_score", ascending=True).head(10)
+        col1, col2 = st.columns(2)
+        col1.subheader(T("top_pos"))
+        col1.dataframe(
+            pos_df[[c for c in ["date", "section", "title", "sentiment_score"] if c in pos_df.columns]]
+        )
+        col2.subheader(T("top_neg"))
+        col2.dataframe(
+            neg_df[[c for c in ["date", "section", "title", "sentiment_score"] if c in neg_df.columns]]
+        )
+    else:
+        st.info(T("no_titles"))
