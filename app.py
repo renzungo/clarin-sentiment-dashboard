@@ -373,3 +373,166 @@ with headline_tab:
         )
     else:
         st.info(T("no_titles"))
+
+
+# --- Sentiment Over Time (Monthly) with Global Avg + Topic Toggle ---
+# Requirements: pandas, plotly.express, streamlit
+# Expected columns in df:
+#   - 'date' (datetime or string)
+#   - 'sentiment' (numeric; e.g., polarity in [-1, 1] or [0,1])
+#   - 'topic' (string; e.g., 'economy' or 'politics')
+# If your column names differ, adjust the CONFIG below.
+
+import pandas as pd
+import numpy as np
+import plotly.express as px
+import streamlit as st
+
+CONFIG = {
+    "date_col": "date",
+    "sentiment_col": "sentiment",
+    "topic_col": "topic",
+    # Map UI choices → values in your data
+    "topic_values": {
+        "Todas": None,          # None means don't filter by topic
+        "Economía": ["economy", "economics", "economia", "eco"], 
+        "Política": ["politics", "politica", "pol"]
+    },
+    # Chart labels
+    "y_label": "Sentimiento promedio mensual",
+    "x_label": "Mes",
+    "title_base": "Sentimiento en tapas por mes",
+    "global_avg_label": "Promedio global",
+}
+
+def _coerce_date(series):
+    # Robust date parsing
+    s = pd.to_datetime(series, errors="coerce", utc=True)
+    # Drop tz for cleaner axis in Plotly (or localize to your tz if you prefer)
+    return s.dt.tz_convert(None) if hasattr(s.dt, "tz_convert") else s
+
+def _filter_by_topic(df, topic_col, selected_values_or_none):
+    if selected_values_or_none is None:
+        return df
+    values = set(v.lower() for v in selected_values_or_none)
+    if topic_col not in df.columns:
+        return df  # no topic in data; treat as "All"
+    # Normalize topic values for matching
+    topic_norm = df[topic_col].astype(str).str.lower().str.strip()
+    return df[topic_norm.isin(values)]
+
+def sentiment_over_time_view(df: pd.DataFrame, key_suffix: str = "sent_time"):
+    c = CONFIG
+
+    # --- Basic validation / coercion ---
+    if c["date_col"] not in df.columns or c["sentiment_col"] not in df.columns:
+        st.error(
+            f"No encuentro las columnas requeridas '{c['date_col']}' y '{c['sentiment_col']}'. "
+            "Ajustá CONFIG o el dataframe."
+        )
+        return
+
+    data = df.copy()
+    data[c["date_col"]] = _coerce_date(data[c["date_col"]])
+    data = data.dropna(subset=[c["date_col"], c["sentiment_col"]])
+
+    # Optional: cap extreme values if your model produces outliers
+    # data[c["sentiment_col"]] = data[c["sentiment_col"]].clip(-1, 1)
+
+    # --- Controls ---
+    with st.container():
+        left, right = st.columns([1, 1])
+        with left:
+            topic_choice = st.radio(
+                "Tema",
+                options=list(c["topic_values"].keys()),
+                index=0,  # "Todas"
+                horizontal=True,
+                key=f"topic_choice_{key_suffix}"
+            )
+        with right:
+            # Optional smoothing window (moving average on monthly series)
+            smooth = st.select_slider(
+                "Suavizado (meses)",
+                options=[1, 2, 3, 4, 6, 12],
+                value=1,
+                help="Promedio móvil sobre el promedio mensual.",
+                key=f"smooth_{key_suffix}"
+            )
+
+    # --- Topic filter ---
+    data_topic = _filter_by_topic(data, c["topic_col"], c["topic_values"][topic_choice])
+
+    if data_topic.empty:
+        st.warning("No hay datos para el filtro seleccionado.")
+        return
+
+    # --- Monthly aggregation ---
+    # Ensure a clean month key
+    data_topic["_month"] = data_topic[c["date_col"]].values.astype("datetime64[M]")
+    monthly = (
+        data_topic
+        .groupby("_month", as_index=False)[c["sentiment_col"]]
+        .mean()
+        .rename(columns={c["sentiment_col"]: "sent_monthly"})
+        .sort_values("_month")
+    )
+
+    # --- Optional smoothing (simple moving average on monthly means) ---
+    if smooth and smooth > 1:
+        monthly["sent_smoothed"] = monthly["sent_monthly"].rolling(smooth, min_periods=1).mean()
+        y_col = "sent_smoothed"
+    else:
+        y_col = "sent_monthly"
+
+    # --- Global (all-time) average on the currently filtered data ---
+    global_avg = monthly["sent_monthly"].mean()
+
+    # --- Figure ---
+    subtitle = "" if topic_choice == "Todas" else f" • {topic_choice}"
+    title = f"{c['title_base']}{subtitle}"
+
+    fig = px.line(
+        monthly,
+        x="_month",
+        y=y_col,
+        markers=True,
+        labels={"_month": c["x_label"], y_col: c["y_label"]},
+        title=title
+    )
+
+    # Add dotted global average reference line
+    fig.add_hline(
+        y=global_avg,
+        line_dash="dot",
+        annotation_text=f"{c['global_avg_label']}: {global_avg:.3f}",
+        annotation_position="top left"
+    )
+
+    # Format axes
+    fig.update_layout(
+        xaxis=dict(tickformat="%Y-%m"),
+        hovermode="x unified",
+        margin=dict(l=10, r=10, t=60, b=10),
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+    # --- Helpful context / KPIs ---
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Promedio global (filtro actual)", f"{global_avg:.3f}")
+    with col2:
+        if len(monthly) >= 2:
+            delta = monthly[y_col].iloc[-1] - monthly[y_col].iloc[max(0, len(monthly)-2)]
+            st.metric("Último cambio mensual", f"{monthly[y_col].iloc[-1]:.3f}", f"{delta:+.3f}")
+        else:
+            st.metric("Último mes", f"{monthly[y_col].iloc[-1]:.3f}")
+    with col3:
+        st.metric("Meses en la serie", f"{len(monthly)}")
+
+# -------------------------
+# Example usage in your app:
+# df = load_your_dataframe_somehow()
+# sentiment_over_time_view(df)
+# -------------------------
