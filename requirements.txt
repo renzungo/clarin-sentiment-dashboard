@@ -1,6 +1,6 @@
-streamlit
-pandas
-plotly
-requests
-openpyxl
-huggingface_hub
+streamlit>=1.32
+pandas>=2.2
+numpy>=1.26
+plotly>=5.20
+wordcloud>=1.9.4
+pillow>=10.2
