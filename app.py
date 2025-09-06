@@ -544,92 +544,107 @@ def distribution_view(dff: pd.DataFrame, active_col: str):
 def keywords_view(dff: pd.DataFrame, key_suffix: str = "kw"):
     st.subheader(T("keywords_title"))
 
-    # Detectar y dejar elegir columnas de texto
-    candidates = pick_text_columns(dff)
+    # --- Detectar columnas de texto (usa helper si existe; si no, fallback) ---
+    exclude = {"url","section","topic","entities","sentiment_label"}
+    if "pick_text_columns" in globals():
+        candidates = pick_text_columns(dff)
+    else:
+        candidates = [c for c in dff.columns if dff[c].dtype == "object" and c not in exclude]
+
     if not candidates:
-        st.info(T("no_text_cols"))
+        st.info(T("no_text_cols") if "no_text_cols" in STRINGS.get(st.session_state.get("lang","es"), {}) else T("no_titles"))
         return
 
-    # Por defecto, tomamos hasta 2 más “obvias”
-    default_pick = [c for c in candidates if c in DEFAULT_TEXT_CANDIDATES][:2] or candidates[:1]
+    default_pick = []
+    if "DEFAULT_TEXT_CANDIDATES" in globals():
+        default_pick = [c for c in candidates if c in DEFAULT_TEXT_CANDIDATES][:2]
+    if not default_pick:
+        default_pick = candidates[:1]
 
+    # --- Controles ---
     col_a, col_b, col_c = st.columns([1,1,1])
     with col_a:
-        chosen_cols = st.multiselect(T("text_cols"), options=candidates, default=default_pick,
-                                     key=f"text_cols_{key_suffix}")
+        chosen_cols = st.multiselect(T("text_cols") if "text_cols" in STRINGS.get(st.session_state.get("lang","es"), {}) else "Text columns",
+                                     options=candidates, default=default_pick, key=f"text_cols_{key_suffix}")
     with col_b:
         n = st.select_slider(T("ngram_size"), options=[1,2,3], value=1, key=f"ng_{key_suffix}")
     with col_c:
         st.checkbox(T("remove_stopwords"), value=True, key="remove_sw")
 
     if not chosen_cols:
-        st.info(T("no_text_cols"))
+        st.info(T("no_text_cols") if "no_text_cols" in STRINGS.get(st.session_state.get("lang","es"), {}) else T("no_titles"))
         return
 
-    # Extraer texto de las columnas elegidas
+    # --- Tokenización + n-gramas ---
     texts = []
     for col in chosen_cols:
-        # mantener solo strings no vacíos
         texts.extend(dff[col].dropna().astype(str).map(str.strip).replace("", np.nan).dropna().tolist())
 
     if not texts:
-        st.info(T("no_text_cols"))
+        st.info(T("no_text_cols") if "no_text_cols" in STRINGS.get(st.session_state.get("lang","es"), {}) else T("no_titles"))
         return
 
-    # Tokenización + n-gramas
+    # Usa los helpers globales si existen; si no, define mínimos aquí
+    def _tokenize(s: str):
+        if "tokenize" in globals():
+            return tokenize(s)
+        s = re.sub(r"http\S+|www\.\S+", " ", str(s))
+        s = re.sub(r"[^A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9\s]", " ", s)
+        toks = [t.lower() for t in s.split() if t.strip()]
+        return toks
+
+    def _ngrams(tokens: list[str], k: int):
+        if "ngrams" in globals():
+            return ngrams(tokens, k)
+        return [tuple(tokens[i:i+k]) for i in range(len(tokens)-k+1)]
+
     tokens = []
     for t in texts:
-        tokens.extend(tokenize(t))
+        tokens.extend(_tokenize(t))
 
-    grams = [" ".join(g) for g in ngrams(tokens, n)] if n > 1 else tokens
+    grams = [" ".join(g) for g in _ngrams(tokens, n)] if n > 1 else tokens
     if not grams:
-        st.info(T("no_text_cols"))
+        st.info(T("no_text_cols") if "no_text_cols" in STRINGS.get(st.session_state.get("lang","es"), {}) else T("no_titles"))
         return
 
     from collections import Counter
     counts = Counter(grams).most_common(50)
     kw_df = pd.DataFrame(counts, columns=["term", "freq"])
 
-    # Intentar WordCloud si el usuario lo activa (opcional)
-# Intentar WordCloud sin matplotlib (más liviano y estable)
-use_wc = st.checkbox(T("use_wordcloud"), value=False, key=f"use_wc_{key_suffix}")
-if use_wc:
-    try:
-        import os
-        from wordcloud import WordCloud
+    # --- WordCloud sin matplotlib (clave usa key_suffix SIEMPRE definido aquí) ---
+    use_wc_key = f"use_wc_{key_suffix}"
+    use_wc = st.checkbox(T("use_wordcloud"), value=False, key=use_wc_key)
+    if use_wc:
+        try:
+            import os
+            from wordcloud import WordCloud
 
-        # Elegir una fuente disponible (opcional pero reduce errores en servers)
-        FONT_CANDIDATES = [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-            "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
-        ]
-        font_path = next((p for p in FONT_CANDIDATES if os.path.exists(p)), None)
+            FONT_CANDIDATES = [
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+                "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+            ]
+            font_path = next((p for p in FONT_CANDIDATES if os.path.exists(p)), None)
 
-        freqs = dict(counts)  # 'counts' viene del Counter(grams).most_common(...)
-        wc = WordCloud(
-            width=900,
-            height=400,
-            background_color="white",
-            collocations=False,            # evita juntar bigramas por frecuencia
-            prefer_horizontal=0.9,
-            font_path=font_path,           # usa la fuente si está disponible
-            regexp=r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9]+(?:\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9]+)*"
-        ).generate_from_frequencies(freqs)
+            freqs = dict(counts)
+            wc = WordCloud(
+                width=900, height=400, background_color="white",
+                collocations=False, prefer_horizontal=0.9,
+                font_path=font_path,
+                regexp=r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9]+(?:\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9]+)*"
+            ).generate_from_frequencies(freqs)
 
-        st.image(wc.to_array(), use_container_width=True, caption=T("keywords_title"))
-    except Exception as e:
-        st.info("WordCloud no disponible; mostrando tabla/gráfico.")
-        if DEBUG:
-            st.exception(e)  # ayuda a diagnosticar en tu Space
+            st.image(wc.to_array(), use_container_width=True, caption=T("keywords_title"))
+        except Exception as e:
+            st.info("WordCloud no disponible; mostrando tabla/gráfico.")
+            if DEBUG:
+                st.exception(e)
 
-
-    # Barra + tabla
+    # --- Barra + tabla ---
     bar = px.bar(kw_df.head(20), x="term", y="freq", title=T("keywords_title"))
     bar.update_layout(xaxis={"categoryorder":"total descending"}, margin=dict(l=10,r=10,t=60,b=10))
     st.plotly_chart(bar, use_container_width=True)
     st.dataframe(kw_df, use_container_width=True)
-   
 
 def entities_view(dff: pd.DataFrame, active_col: str, key_suffix: str = "ents"):
     st.subheader(T("entities_title"))
