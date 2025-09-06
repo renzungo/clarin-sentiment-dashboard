@@ -591,17 +591,38 @@ def keywords_view(dff: pd.DataFrame, key_suffix: str = "kw"):
     kw_df = pd.DataFrame(counts, columns=["term", "freq"])
 
     # Intentar WordCloud si el usuario lo activa (opcional)
-    use_wc = st.checkbox(T("use_wordcloud"), value=False, key=f"use_wc_{key_suffix}")
-    if use_wc:
-        try:
-            from wordcloud import WordCloud
-            import matplotlib.pyplot as plt
-            wc = WordCloud(width=900, height=400, background_color="white").generate_from_frequencies(dict(counts))
-            fig = plt.figure(figsize=(9, 4))
-            plt.imshow(wc, interpolation="bilinear"); plt.axis("off")
-            st.pyplot(fig); plt.close(fig)
-        except Exception:
-            st.info("WordCloud no disponible; mostrando tabla/gráfico.")
+# Intentar WordCloud sin matplotlib (más liviano y estable)
+use_wc = st.checkbox(T("use_wordcloud"), value=False, key=f"use_wc_{key_suffix}")
+if use_wc:
+    try:
+        import os
+        from wordcloud import WordCloud
+
+        # Elegir una fuente disponible (opcional pero reduce errores en servers)
+        FONT_CANDIDATES = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+        ]
+        font_path = next((p for p in FONT_CANDIDATES if os.path.exists(p)), None)
+
+        freqs = dict(counts)  # 'counts' viene del Counter(grams).most_common(...)
+        wc = WordCloud(
+            width=900,
+            height=400,
+            background_color="white",
+            collocations=False,            # evita juntar bigramas por frecuencia
+            prefer_horizontal=0.9,
+            font_path=font_path,           # usa la fuente si está disponible
+            regexp=r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9]+(?:\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9]+)*"
+        ).generate_from_frequencies(freqs)
+
+        st.image(wc.to_array(), use_container_width=True, caption=T("keywords_title"))
+    except Exception as e:
+        st.info("WordCloud no disponible; mostrando tabla/gráfico.")
+        if DEBUG:
+            st.exception(e)  # ayuda a diagnosticar en tu Space
+
 
     # Barra + tabla
     bar = px.bar(kw_df.head(20), x="term", y="freq", title=T("keywords_title"))
