@@ -178,12 +178,12 @@ DATE_COL_ENV  = os.getenv("DATE_COL", "").strip().lower()
 SCORE_COL_ENV = os.getenv("SCORE_COL", "").strip().lower()
 LOCAL_FALLBACK = "data/clarin_sentiment.csv"
 
-# Texto / Entidades por ENV (opcional)
-TEXT_COLS_ENV      = os.getenv("TEXT_COLS", "").strip()        # "title,ocr_text"
-ENTITIES_COLS_ENV  = os.getenv("ENTITIES_COLS", "").strip()    # "entities_json,ner"
-PERSON_COLS_ENV    = os.getenv("PERSON_COLS", "").strip()      # "persons,per_list"
-ORG_COLS_ENV       = os.getenv("ORG_COLS", "").strip()         # "orgs,companies"
-LOC_COLS_ENV       = os.getenv("LOC_COLS", "").strip()         # "locs,places"
+# Texto / Entidades por ENV (con defaults a tus columnas JSON)
+TEXT_COLS_ENV      = os.getenv("TEXT_COLS", "").strip()        # opcional (p.ej. "title,ocr_text")
+ENTITIES_COLS_ENV  = os.getenv("ENTITIES_COLS", "").strip()    # aquí vacío (no hay 'entities' global)
+PERSON_COLS_ENV    = os.getenv("PERSON_COLS", "people_json").strip()
+ORG_COLS_ENV       = os.getenv("ORG_COLS", "orgs_json").strip()
+LOC_COLS_ENV       = os.getenv("LOC_COLS", "places_json").strip()
 
 # =============================================================================
 # Requisitos
@@ -385,30 +385,36 @@ def tokenize(s: str) -> List[str]:
 def ngrams(tokens: List[str], n: int) -> List[Tuple[str, ...]]:
     return [tuple(tokens[i:i+n]) for i in range(len(tokens)-n+1)]
 
-# Entidades: sinónimos / ENV
-PERSON_SYNS = ["person","persons","per","per_list","entities_per","ner_per","people","persona","personas","PER","per"]
-ORG_SYNS    = ["org","orgs","organization","organizacion","organización","entities_org","ner_org","company","companies","empresa","empresas","ORG","org"]
-LOC_SYNS    = ["loc","locs","location","locations","ubicacion","ubicación","lugar","entities_loc","ner_loc","place","places","ciudad","ciudades","pais","país","LOC","loc"]
+# =============================================================================
+# Entidades (parser declarativo por ENV) + defensas
+# =============================================================================
+def _looks_like_filename(s: str) -> bool:
+    s = str(s or "").strip().lower()
+    if not s:
+        return False
+    if "/" in s or "\\" in s:
+        return True
+    if re.search(r"\.(txt|csv|json|pdf|docx?)$", s):
+        return True
+    if re.match(r"(cover|tapa|portada)[ _-]?\d{8}\.txt$", s):
+        return True
+    return False
 
 def parse_entities_column(df: pd.DataFrame) -> Optional[pd.DataFrame]:
     """
-    Devuelve ['row_id','entity','entity_norm','label'] leyendo:
-      - 'entities' (JSON/lista o string "PER: Milei; ORG: FMI")
-      - columnas por tipo: person*/PER, org*/ORG, loc*/LOC (con sinónimos y ENV)
+    Devuelve ['row_id','entity','entity_norm','label'] leyendo EXCLUSIVAMENTE:
+      - ENTITIES_COLS_ENV (si se declaró) -> cada item puede ser lista/dict o string "PER: Milei"
+      - PERSON_COLS_ENV, ORG_COLS_ENV, LOC_COLS_ENV -> SOPORTAN JSON/listas/dicts o strings separados por ; , | /
     """
-    if df.empty: return None
-    out = []
+    if df.empty:
+        return None
 
-    # 1) Candidatas genericas
-    entity_like_cols = []
-    if ENTITIES_COLS_ENV:
-        entity_like_cols.extend([c for c in _split_env_cols(ENTITIES_COLS_ENV) if c in df.columns])
-    if "entities" in df.columns and "entities" not in entity_like_cols:
-        entity_like_cols.append("entities")
+    out = []
 
     def _emit(label: str, ent: str, rid: int):
         ent = str(ent).strip()
-        if not ent: return
+        if not ent or _looks_like_filename(ent):
+            return
         out.append({
             "row_id": rid,
             "entity": ent,
@@ -416,50 +422,89 @@ def parse_entities_column(df: pd.DataFrame) -> Optional[pd.DataFrame]:
             "label": (label or "").upper()
         })
 
-    # 1a) Columna(s) 'entities'
+    def _maybe_parse_json_like(val):
+        if isinstance(val, (list, tuple, dict)):
+            return val
+        s = str(val)
+        try:
+            return json.loads(s)
+        except Exception:
+            pass
+        try:
+            return ast.literal_eval(s)
+        except Exception:
+            return None
+
+    def _extract_items_any(val) -> List[str]:
+        """
+        Devuelve lista de strings desde:
+        - lista/tupla de strings o dicts (usa keys text/name/entity/value si dict)
+        - string con JSON/lista Python
+        - string plano separado por ; , | /
+        """
+        if isinstance(val, (list, tuple)):
+            seq = val
+        else:
+            parsed = _maybe_parse_json_like(val)
+            if isinstance(parsed, (list, tuple)):
+                seq = parsed
+            else:
+                return [x.strip() for x in re.split(r"[;,\|/]\s*", str(val)) if x.strip()]
+
+        items = []
+        for it in seq:
+            if isinstance(it, dict):
+                items.append(it.get("text") or it.get("name") or it.get("entity") or it.get("value") or "")
+            else:
+                items.append(str(it))
+        return [x.strip() for x in items if str(x).strip()]
+
+    # 1) ENTITIES_COLS exactas (si se declararon)
+    entity_like_cols = [c for c in (ENTITIES_COLS_ENV.split(",") if ENTITIES_COLS_ENV else [])]
+    entity_like_cols = [c.strip().lower() for c in entity_like_cols if c.strip()]
+    entity_like_cols = [c for c in entity_like_cols if c in df.columns]
+
     for col in entity_like_cols:
         for idx, row in df.iterrows():
             rid = int(row.get("row_id", idx))
             raw = row[col]
-            if pd.isna(raw): continue
-            parsed = None
-            if isinstance(raw, (list, tuple, dict)):
-                parsed = raw
-            else:
-                s = str(raw)
-                try: parsed = json.loads(s)
-                except Exception:
-                    try: parsed = ast.literal_eval(s)
-                    except Exception: parsed = None
+            if pd.isna(raw):
+                continue
+            parsed = _maybe_parse_json_like(raw)
             if isinstance(parsed, (list, tuple)):
                 for item in parsed:
                     if isinstance(item, dict):
                         _emit(item.get("label",""), item.get("text", item.get("entity","")), rid)
                     else:
-                        _emit("", str(item), rid)
+                        _emit("", item, rid)
                 continue
-            # Texto plano "LABEL: cosa; LABEL: otra"
             parts = re.split(r"[;,\|]\s*", str(raw))
             for p in parts:
                 m = re.match(r"(?P<label>\w+)\s*[:|-]\s*(?P<ent>.+)$", p)
                 if m: _emit(m.group("label"), m.group("ent"), rid)
                 else: _emit("", p, rid)
 
-    # 2) Columnas separadas por tipo (+ ENV)
-    def _split_items(val: str) -> List[str]:
-        return [x.strip() for x in re.split(r"[;,\|/]\s*", str(val)) if x.strip()]
-    person_cols = _split_env_cols(PERSON_COLS_ENV) or [c for c in PERSON_SYNS if c in df.columns]
-    org_cols    = _split_env_cols(ORG_COLS_ENV)    or [c for c in ORG_SYNS if c in df.columns]
-    loc_cols    = _split_env_cols(LOC_COLS_ENV)    or [c for c in LOC_SYNS if c in df.columns]
-    for cols, lab in [(person_cols,"PERSON"), (org_cols,"ORG"), (loc_cols,"LOC")]:
+    # 2) Columnas separadas por tipo (EXACTAS por ENV)
+    def _cols_from_env(s: str) -> List[str]:
+        return [c.strip().lower() for c in s.split(",") if c.strip()] if s else []
+
+    person_cols = [c for c in _cols_from_env(PERSON_COLS_ENV) if c in df.columns]
+    org_cols    = [c for c in _cols_from_env(ORG_COLS_ENV)    if c in df.columns]
+    loc_cols    = [c for c in _cols_from_env(LOC_COLS_ENV)    if c in df.columns]
+
+    for cols, lab in [(person_cols, "PERSON"), (org_cols, "ORG"), (loc_cols, "LOC")]:
         for col in cols:
-            if col not in df.columns: continue
             for idx, row in df.iterrows():
                 rid = int(row.get("row_id", idx))
-                for ent in _split_items(row[col]):
+                raw = row[col]
+                if pd.isna(raw):
+                    continue
+                for ent in _extract_items_any(raw):
                     _emit(lab, ent, rid)
 
-    if not out: return None
+    if not out:
+        return None
+
     ents = pd.DataFrame(out)
     ents["label"] = ents["label"].fillna("").str.upper()
     return ents[["row_id","entity","entity_norm","label"]]
@@ -648,10 +693,12 @@ def entities_view(dff: pd.DataFrame, active_col: str, key_suffix: str = "ents"):
         st.caption("🔎 Diagnóstico Entities")
         st.write({
             "rows_filtrados": len(dff),
-            "entities_col": "entities" in dff.columns,
-            "person_cols_presentes": [c for c in PERSON_SYNS if c in dff.columns],
-            "org_cols_presentes": [c for c in ORG_SYNS if c in dff.columns],
-            "loc_cols_presentes": [c for c in LOC_SYNS if c in dff.columns],
+            "people_cols_env": PERSON_COLS_ENV,
+            "org_cols_env": ORG_COLS_ENV,
+            "loc_cols_env": LOC_COLS_ENV,
+            "present_people_cols": [c for c in _split_env_cols(PERSON_COLS_ENV) if c in dff.columns],
+            "present_org_cols": [c for c in _split_env_cols(ORG_COLS_ENV) if c in dff.columns],
+            "present_loc_cols": [c for c in _split_env_cols(LOC_COLS_ENV) if c in dff.columns],
             "texto_detectado": [c for c in dff.columns if dff[c].dtype=="object"][:10],
             "puntaje_activo": active_col,
         })
@@ -665,7 +712,7 @@ def entities_view(dff: pd.DataFrame, active_col: str, key_suffix: str = "ents"):
         ents = spacy_ner_from_rows(dff, chosen)
 
     if ents is None or ents.empty:
-        st.info("No hay entidades disponibles. Subí una columna 'entities' o activa NER.")
+        st.info("No hay entidades disponibles. Subí columnas (people_json/orgs_json/places_json) o activa NER.")
         return
 
     if ent_type != "ALL":
@@ -735,6 +782,10 @@ if DEBUG:
     st.sidebar.write("HF_DATASET =", HF_DATASET)
     st.sidebar.write("HF_FILE =", HF_FILE)
     st.sidebar.write("HF_AVAILABLE =", HF_AVAILABLE)
+    st.sidebar.write("TEXT_COLS_ENV =", TEXT_COLS_ENV or "(auto)")
+    st.sidebar.write("PERSON_COLS_ENV =", PERSON_COLS_ENV or "(auto)")
+    st.sidebar.write("ORG_COLS_ENV =", ORG_COLS_ENV or "(auto)")
+    st.sidebar.write("LOC_COLS_ENV =", LOC_COLS_ENV or "(auto)")
 
 df = load_data()
 # id estable por fila para unir entidades ↔ puntajes
@@ -776,7 +827,7 @@ dff = df.loc[mask].copy()
 if dff.empty:
     st.info(T("no_data")); st.stop()
 
-# Tabs SIEMPRE visibles, pero cada vista maneja ausencias con mensajes claros
+# Tabs SIEMPRE visibles, cada vista maneja ausencias con mensajes claros
 overview_tab, entities_tab, section_tab, headline_tab = st.tabs([
     T("overview"), T("entities_tab"), T("section_tab"), T("headline_tab")
 ])
